@@ -1,7 +1,7 @@
-import random
 import cv2
 import os
 import numpy as np
+import paramset as P
 
 
 COLORS = [
@@ -106,7 +106,7 @@ def get_block_feature(block, index=-1):
 
 # 计算并返回归一化后的子块之间的diff
 def get_diff(img, features, param, filename):
-    BLOCK_NUM = param['sub_block_num']
+    BLOCK_NUM = param[P.IMG_SUBBLOCK_NUM]
 
     img = img.copy()
     img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
@@ -158,7 +158,7 @@ def get_diff(img, features, param, filename):
 
 
 def show_groups(img, groups, param, filename):
-    BLOCKS_NUM = param['sub_block_num']
+    BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
 
     img = img.copy()
     img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
@@ -193,7 +193,7 @@ def show_groups(img, groups, param, filename):
 # 为每个group添加两端的block
 def add_end_blocks(groups, blocks, border_block_index, used_blocks, param):
     # 部分参数
-    BLOCKS_NUM = param['sub_block_num']
+    BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
 
     all_index = range(0, BLOCKS_NUM * BLOCKS_NUM)
 
@@ -241,12 +241,34 @@ def add_end_blocks(groups, blocks, border_block_index, used_blocks, param):
     return groups
 
 
+# 确认当前的group是否符合;主要检查是否是相邻的
+def is_valid_groups(curGroup, groups, param):
+    if len(groups) < 1:
+        return True
+
+    BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
+    temp = groups.copy()
+    temp = list(np.array(temp).flatten())
+
+    # 查看和已有的groups有多少相邻的
+    c_neighbor = 0
+    for block_index in curGroup:
+        neighbor_ind = [block_index-1, block_index+1, block_index-BLOCKS_NUM, block_index+BLOCKS_NUM]
+        for i in range(4):
+            if neighbor_ind[i] in temp:
+                c_neighbor = c_neighbor + 1
+                temp.remove(neighbor_ind[i])
+
+    # 与已有的groups最多只能有多少个相邻的blocks
+    dist = param[P.FEA_BLOCKS_DIST]
+    return c_neighbor <= dist
+
+
 # 根据相似度查找比较接近且相连的子块
 def get_connected_blocks(diffs, blocks, param):
     # 部分参数
-    GROUP_NUM = param['features_num']
-    BLOCKS_NUM = param['sub_block_num']
-    BLOCKS_PER_FEATURE = param['blocks_per_feature']
+    GROUP_NUM = param[P.IMG_FEATURES_NUM]
+    BLOCKS_PER_FEATURE = param[P.FEA_BLOCKS_NUM]
 
     groups = []                  #存储每组选好的特征
     min_diffs = sorted(diffs)
@@ -277,11 +299,13 @@ def get_connected_blocks(diffs, blocks, param):
 
             # 每一组x个block
             if len(group) == BLOCKS_PER_FEATURE:
-                groups.append(group)
-                used_blocks.extend(group)
+                valid = is_valid_groups(group, groups, param)
+                if valid:
+                    groups.append(group)
+                    used_blocks.extend(group)
+                    loop_num = 0
+                    break
                 group = []
-                loop_num = 0
-                break
         loop_num += 1
 
         # 超过一定次数，还是没能组成指定数量block的一组
@@ -300,7 +324,7 @@ def get_connected_blocks(diffs, blocks, param):
 
 def main_process(img, filename, param):
     # 将原图分为指定的子块;
-    sub_block_num = param['sub_block_num']
+    sub_block_num = param[P.IMG_SUBBLOCK_NUM]
     blocks = split_img(img, sub_block_num)
 
     # 获取每个子块的特征
