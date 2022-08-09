@@ -1,8 +1,12 @@
 import cv2
 import os
 import numpy as np
+import torch
+import torch.nn as nn
+import torchvision.models as models
 import paramset as P
-
+import ColorFeature as CF
+import CNNFeature as CnnFeature
 
 COLORS = [
     [243, 178, 207, 255],
@@ -14,6 +18,14 @@ COLORS = [
     [28, 97, 255, 255],
     [108, 211, 34, 255],
 ]
+
+# 获取全连接层的输入
+class Identity(nn.Module):
+    def __init__(self):
+        super(Identity, self).__init__()
+
+    def forward(self, x):
+        return x
 
 
 def get_block_info(param):
@@ -73,90 +85,6 @@ def split_img(img, sub_block_num):
     return pieces
 
 
-# 获得每个子块的特征
-def get_block_feature(block, index=-1):
-    # 将每个子块分为3*3区域，分别计算其颜色特征
-    block_width = int(block.shape[0] / 3)
-    block_high = int(block.shape[1] / 3)
-
-    result = []
-    for i in range(0, 3):
-        for j in range(0, 3):
-            result.append([
-                np.average(block[i * block_width:(i + 1) * block_width, j * block_high:(j + 1) * block_high, 0]),
-                np.average(block[i * block_width:(i + 1) * block_width, j * block_high:(j + 1) * block_high, 1]),
-                np.average(block[i * block_width:(i + 1) * block_width, j * block_high:(j + 1) * block_high, 2])
-            ])
-    result = np.array(result)
-
-    if index == -1:
-        return result.reshape(result.shape[0] * result.shape[1])
-
-    blur_piece = np.zeros(block.shape)
-
-    for i in range(0, 3):
-        for j in range(0, 3):
-            blur_piece[
-            i * block_width:(i + 1) * block_width, j * block_high:(j + 1) * block_high
-            ] = result[i * 3 + j]
-
-    cv2.imwrite('output/blur_piece_{}.png'.format(index), blur_piece)
-    return result.reshape(result.shape[0] * result.shape[1])
-
-
-# 计算并返回归一化后的子块之间的diff
-def get_diff(img, features, param, filename):
-    BLOCK_NUM = param[P.IMG_SUBBLOCK_NUM]
-
-    img = img.copy()
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
-    img[..., 3] = 100
-    piece_width = int(img.shape[0] / BLOCK_NUM)
-    piece_high = int(img.shape[1] / BLOCK_NUM)
-
-    # 计算每个block特征之间的极值差异，为后续标准化准备
-    diffs = []
-    for i in range(0, len(features) - 1):
-        diff = np.sum(np.abs(features[i] - features[i + 1]))
-        diffs.append(diff)
-        if i + BLOCK_NUM < len(features):
-            diff = np.sum(np.abs(features[i] - features[i + BLOCK_NUM]))
-            diffs.append(diff)
-    max_diff = max(diffs)
-    min_diff = min(diffs)
-
-    sorted_diffs = []
-    line_width = 20
-    # 计算与右方块的diff
-    for i in range(0, BLOCK_NUM):
-        for j in range(0, BLOCK_NUM - 1):
-            diff = np.sum(np.abs(features[i * BLOCK_NUM + j] - features[i * BLOCK_NUM + j + 1]))
-            # 归一化
-            ratio = (diff - min_diff) / (max_diff - min_diff)
-            sorted_diffs.append(ratio)
-
-            # 利用透明度来表示相似性
-            img[i * piece_width:(i + 1) * piece_width,
-            (j + 1) * piece_high - int(line_width / 2):
-            (j + 1) * piece_high + int(line_width / 2)
-            ] = [255 * (1 - ratio), 255 * (1 - ratio), 255, 255]
-
-    # 计算与下方块的diff
-    for i in range(0, BLOCK_NUM - 1):
-        for j in range(0, BLOCK_NUM):
-            diff = np.sum(np.abs(features[i * BLOCK_NUM + j] - features[(i + 1) * BLOCK_NUM + j]))
-            ratio = (diff - min_diff) / (max_diff - min_diff)
-            sorted_diffs.append(ratio)
-
-            img[(i + 1) * piece_width - int(line_width / 2):
-                (i + 1) * piece_width + int(line_width / 2),
-            j * piece_high:(j + 1) * piece_high
-            ] = [255 * (1 - ratio), 255 * (1 - ratio), 255, 255]
-
-    # cv2.imwrite('output/{}_diff.png'.format(filename), img)
-    return sorted_diffs
-
-
 def show_groups(img, groups, param, filename):
     BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
 
@@ -187,7 +115,11 @@ def show_groups(img, groups, param, filename):
 
     if not os.path.exists("output"):
         os.makedirs("output")
-    cv2.imwrite('output/{}_result.png'.format(filename), img)
+
+    if param[P.FEA_MODEL] == 'color':
+        cv2.imwrite('output/{}_color_result.png'.format(filename), img)
+    elif param[P.FEA_MODEL] == 'cnn':
+        cv2.imwrite('output/{}_cnn_result.png'.format(filename), img)
 
 
 # 为每个group添加两端的block
@@ -225,7 +157,7 @@ def add_end_blocks(groups, blocks, border_block_index, used_blocks, param):
             d = 0
             for i in range(len(group)):
                 group_block = blocks[group[i]]
-                d = d + np.sum(np.abs(get_block_feature(blocks[block_index]) - get_block_feature(group_block)))
+                d = d + np.sum(np.abs(CF.get_block_feature(blocks[block_index]) - CF.get_block_feature(group_block)))
             dist.append(d)
 
         # 将与group距离最大的blcok作为左右两端的block
@@ -242,10 +174,16 @@ def add_end_blocks(groups, blocks, border_block_index, used_blocks, param):
 
 
 # 确认当前的group是否符合;主要检查是否是相邻的
-def is_valid_groups(curGroup, groups, param):
+# 相邻的定义是: 在4连通区域相邻
+def is_valid_groups(curGroup, group_diff_value, groups, param):
     if len(groups) < 1:
         return True
 
+    # # group内部方差过大;
+    # if np.array(group_diff_value).var() > 0.019:
+    #     return False
+
+    # 将已有的所有blocks index存放到temp
     BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
     temp = groups.copy()
     temp = list(np.array(temp).flatten())
@@ -253,10 +191,12 @@ def is_valid_groups(curGroup, groups, param):
     # 查看和已有的groups有多少相邻的
     c_neighbor = 0
     for block_index in curGroup:
+        # 4连通区域
         neighbor_ind = [block_index-1, block_index+1, block_index-BLOCKS_NUM, block_index+BLOCKS_NUM]
         for i in range(4):
             if neighbor_ind[i] in temp:
                 c_neighbor = c_neighbor + 1
+                # 如果已有相邻的，则删除，以免后续还会与此block比对
                 temp.remove(neighbor_ind[i])
 
     # 与已有的groups最多只能有多少个相邻的blocks
@@ -271,11 +211,15 @@ def get_connected_blocks(diffs, blocks, param):
     BLOCKS_PER_FEATURE = param[P.FEA_BLOCKS_NUM]
 
     groups = []                  #存储每组选好的特征
+    groups_diff_value = []
+    group = []                   # 单独的一组block
+    group_diff_value = []        # 单独的一组block之间的距离
+
     min_diffs = sorted(diffs)
     used_blocks = []             # 记录已经被选中的特征
-    group = []                   # 单独的一组特征
+
     loop_num = 0
-    slice_ratio = 0.8
+    slice_ratio = 0.9
     block_map, border_block_index = get_block_info(param)
     while len(groups) < GROUP_NUM:
         for diff in min_diffs[:int(len(min_diffs) * slice_ratio)]:
@@ -290,31 +234,50 @@ def get_connected_blocks(diffs, blocks, param):
             # 初次登记
             if len(group) == 0:
                 group.extend(block_index)
+                group_diff_value.append(diff.item())
             else:
                 # 确认两组group中，是否有一个block是一样的，从而保证是相连区域;
                 if len([i for i in group if i in block_index]) > 0:
                     group.extend(block_index)
+                    group_diff_value.append(diff.item())
                     # 去掉重复的block编号
                     group = list(set(group))
 
             # 每一组x个block
             if len(group) == BLOCKS_PER_FEATURE:
-                valid = is_valid_groups(group, groups, param)
+                valid = is_valid_groups(group, group_diff_value, groups, param)
                 if valid:
                     groups.append(group)
+                    groups_diff_value.append(group_diff_value)
                     used_blocks.extend(group)
+                    group = []
+                    group_diff_value = []
                     loop_num = 0
                     break
+                # 查找新一轮feature
                 group = []
+                group_diff_value = []
         loop_num += 1
 
         # 超过一定次数，还是没能组成指定数量block的一组
-        # 则不再考虑这些blocks，直接放入已登记的组
-        if loop_num >= 5:
+        # 则不再考虑这些blocks，直接放入已登记的组.同时降低
+        # 特征组的要求
+        if loop_num >= 6:
             used_blocks.extend(group)
+            # 降低要求
+            print("lower the requirement of connectivity!")
+            param[P.FEA_BLOCKS_DIST] = param[P.FEA_BLOCKS_DIST]+1
+            # print(used_blocks, groups)
             group = []
+            group_diff_value = []
             loop_num = 0
+
+    # groups信息
     print(groups)
+    if param[P.DEBUG]:
+        print(groups_diff_value)
+        for g in groups_diff_value:
+            print(np.array(g).var())
 
     # 选择两侧的blocks
     add_end_blocks(groups, blocks, border_block_index, used_blocks, param)
@@ -322,21 +285,41 @@ def get_connected_blocks(diffs, blocks, param):
     return groups
 
 
-def main_process(img, filename, param):
+def load_cnn_model():
+    model = models.resnet18(pretrained=False)
+    model.load_state_dict(torch.load('model//resnet18-5c106cde.pth'), False)
+    # 直接输出fc的输入层
+    model.fc = Identity()
+    if torch.cuda.is_available():
+        model.cuda()
+    model.eval()
+
+    return model
+
+
+def main_process(img, model, filename, param):
     # 将原图分为指定的子块;
     sub_block_num = param[P.IMG_SUBBLOCK_NUM]
+    # N * N个blocks，每个blocks存储了该区域的子图像
     blocks = split_img(img, sub_block_num)
 
     # 获取每个子块的特征
     features = []
+    features2 = []
     for b in blocks:
-        features.append(get_block_feature(b))
+        # 颜色特征
+        features.append(CF.get_block_feature(b))
+        features2.append(CnnFeature.get_block_feature(b, model))
 
-    # 计算每个子块之间的相似度
-    similarity = get_diff(img, features, param, filename)
+    # 计算每个子块之间的差异度
+    diff_clr = CF.get_diff(img, features, param, filename)
+    diff_cnn = CnnFeature.get_diff(img, features2, param, filename)
 
-    # 根据相似度查找相邻的blocks
-    groups = get_connected_blocks(similarity, blocks, param)
+    # 根据差异度查找相邻的blocks,默认基于颜色查找
+    diff = diff_clr
+    if param[P.FEA_MODEL] == 'cnn':
+        diff = diff_cnn
+    groups = get_connected_blocks(diff, blocks, param)
 
     # 输出groups
     show_groups(img, groups, param, filename)
