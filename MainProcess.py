@@ -1,12 +1,11 @@
 import cv2
 import os
 import numpy as np
-import torch
-import torch.nn as nn
-import torchvision.models as models
 import paramset as P
 import ColorFeature as CF
 import CNNFeature as CnnFeature
+import yolov5.detect_single as yolo_det
+
 
 COLORS = [
     [243, 178, 207, 255],
@@ -18,14 +17,6 @@ COLORS = [
     [28, 97, 255, 255],
     [108, 211, 34, 255],
 ]
-
-# 获取全连接层的输入
-class Identity(nn.Module):
-    def __init__(self):
-        super(Identity, self).__init__()
-
-    def forward(self, x):
-        return x
 
 
 def get_block_info(param):
@@ -285,16 +276,11 @@ def get_connected_blocks(diffs, blocks, param):
     return groups
 
 
-def load_cnn_model():
-    model = models.resnet18(pretrained=False)
-    model.load_state_dict(torch.load('model//resnet18-5c106cde.pth'), False)
-    # 直接输出fc的输入层
-    model.fc = Identity()
-    if torch.cuda.is_available():
-        model.cuda()
-    model.eval()
-
-    return model
+# 查找宠物的头像区域
+def find_pet_face(model, opt):
+    res = yolo_det.run(model, **vars(opt))
+    print(res)
+    return res
 
 
 def main_process(img, model, filename, param):

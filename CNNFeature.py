@@ -4,6 +4,30 @@ import torch
 from torchvision.transforms import transforms
 import torch.nn.functional as F
 import paramset as P
+import torch
+import torch.nn as nn
+import torchvision.models as models
+
+
+# 获取全连接层的输入
+class Identity(nn.Module):
+    def __init__(self):
+        super(Identity, self).__init__()
+
+    def forward(self, x):
+        return x
+
+
+def load_cnn_model():
+    model = models.resnet18(pretrained=False)
+    model.load_state_dict(torch.load('model//resnet18-5c106cde.pth'), False)
+    # 直接输出fc的输入层
+    model.fc = Identity()
+    if torch.cuda.is_available():
+        model.cuda()
+    model.eval()
+
+    return model
 
 
 # 获得每个子块的特征
