@@ -195,8 +195,87 @@ def is_valid_groups(curGroup, group_diff_value, groups, param):
     return c_neighbor <= dist
 
 
+# pet所在的区域
+def get_pet_blocks(img, pet_box, param, diffs):
+    BLOCKS_NUM = param[P.IMG_SUBBLOCK_NUM]
+    BLOCKS_PER_FEATURE = param[P.FEA_BLOCKS_NUM]
+
+    xmin,ymin,xmax,ymax = pet_box[0],pet_box[1],pet_box[2],pet_box[3]
+    x_start = int(xmin / int(img.shape[0] / BLOCKS_NUM))
+    y_start = int(ymin / int(img.shape[1] / BLOCKS_NUM))
+    x_end = int(xmax / int(img.shape[0] / BLOCKS_NUM))
+    y_end = int(ymax / int(img.shape[1] / BLOCKS_NUM))
+
+    #全图最外面那圈不要
+    x_start, y_start = max(1, x_start), max(1, y_start)
+    x_end, y_end = min(BLOCKS_NUM-2, x_end), min(BLOCKS_NUM-2, y_end)
+
+    groups = []
+    group = []  # 单独的一组block
+    used_blocks = []
+    # pet所在的block区域
+    pet_blocks = []
+
+    # 如果pet全部区域都比特征组个数小，则全部区域加入;
+    if (x_end - x_start + 1) * (y_end - y_start + 1) <= BLOCKS_PER_FEATURE:
+        for y in range(y_start, y_end+1):
+            for x in range(x_start, x_end+1):
+                group.append(x + y * BLOCKS_NUM)
+                used_blocks.append(x + y * BLOCKS_NUM)
+    # 如果不考虑最外圈,pet中心区域刚好等于特征组个数, 也可以全部区域加入;
+    elif (x_end - x_start - 1) * (y_end - y_start - 1) == BLOCKS_PER_FEATURE:
+        for y in range(y_start+1, y_end):
+            for x in range(x_start+1, x_end):
+                group.append(x + y * BLOCKS_NUM)
+                used_blocks.append(x + y * BLOCKS_NUM)
+    else:
+        # 在pet区域内查找特征组
+        for y in range(y_start, y_end+1):
+            for x in range(x_start, x_end+1):
+                pet_blocks.append(x + y * BLOCKS_NUM)
+
+    # 如果特征组数量还不足
+    if len(group) < BLOCKS_PER_FEATURE:
+        block_map, border_block_index = get_block_info(param)
+
+        # 第一个block选择最中间的
+        cx = int((xmin + xmax) / 2 / int(img.shape[0] / BLOCKS_NUM))
+        cy = int((ymin + ymax) / 2 / int(img.shape[0] / BLOCKS_NUM))
+        if (cx + cy*BLOCKS_NUM) not in used_blocks:
+            group.append(cx + cy*BLOCKS_NUM)
+            used_blocks.append(cx + cy*BLOCKS_NUM)
+
+        # 在已经选择的block四周扩散, 凑齐个数
+        while len(group) < BLOCKS_PER_FEATURE:
+            min_diff = 1000
+            for blk in group:
+                # block序号:上下左右
+                neighb_ind = [blk+1, blk-1, blk+BLOCKS_NUM, blk-BLOCKS_NUM]
+                # 和上述block对应的diff序号
+                neighb_dif = [blk, blk-1, BLOCKS_NUM * (BLOCKS_NUM - 1)+blk,
+                                          BLOCKS_NUM * (BLOCKS_NUM - 1)+blk-1]
+                # 四个方向中最小
+                for i in range(4):
+                    # 已用的或者在边界的，不考虑
+                    if neighb_ind[i] in border_block_index or neighb_ind[i] in used_blocks:
+                        continue
+                    # 如果pet区域大于特征组数目,则只考虑在pet区域选择特征;
+                    if pet_blocks:
+                        if neighb_ind[i] not in pet_blocks:
+                            continue
+                    if diffs[neighb_dif[i]] < min_diff:
+                        newblk = neighb_ind[i]
+                        min_diff = diffs[neighb_dif[i]]
+            # 最小的加入;
+            group.append(newblk)
+            used_blocks.append(newblk)
+
+    groups.append(group)
+    return groups
+
+
 # 根据相似度查找比较接近且相连的子块
-def get_connected_blocks(diffs, blocks, param):
+def get_connected_blocks(diffs, blocks, param, exist_groups):
     # 部分参数
     GROUP_NUM = param[P.IMG_FEATURES_NUM]
     BLOCKS_PER_FEATURE = param[P.FEA_BLOCKS_NUM]
@@ -209,11 +288,16 @@ def get_connected_blocks(diffs, blocks, param):
     min_diffs = sorted(diffs)
     used_blocks = []             # 记录已经被选中的特征
 
+    # 先记录已有的特征组
+    if len(exist_groups):
+        for g in exist_groups:
+            groups.append(g)
+            used_blocks.extend(g)
+
     loop_num = 0
-    slice_ratio = 0.9
     block_map, border_block_index = get_block_info(param)
     while len(groups) < GROUP_NUM:
-        for diff in min_diffs[:int(len(min_diffs) * slice_ratio)]:
+        for diff in min_diffs[:int(len(min_diffs))]:
             # 获得当前diff对应的两个block的index
             block_index = block_map[diffs.index(diff)]
             # 边界不考虑
@@ -254,11 +338,13 @@ def get_connected_blocks(diffs, blocks, param):
         # 则不再考虑这些blocks，直接放入已登记的组.同时降低
         # 特征组的要求
         if loop_num >= 6:
+            pre_used_block_len = len(used_blocks)
             used_blocks.extend(group)
-            # 降低要求
-            print("lower the requirement of connectivity!")
-            param[P.FEA_BLOCKS_DIST] = param[P.FEA_BLOCKS_DIST]+1
-            # print(used_blocks, groups)
+            # 如果used_blocks无变化,需要降低要求;
+            if len(used_blocks) == pre_used_block_len:
+                # 降低要求
+                print("lower the requirement of connectivity!")
+                param[P.FEA_BLOCKS_DIST] = param[P.FEA_BLOCKS_DIST]+1
             group = []
             group_diff_value = []
             loop_num = 0
@@ -277,13 +363,27 @@ def get_connected_blocks(diffs, blocks, param):
 
 
 # 查找宠物的头像区域
-def find_pet_face(model, opt):
+def find_pet_face(model, opt, img, param):
+    # 返回的坐标是xyxy;所有信息保存在res[0]中
     res = yolo_det.run(model, **vars(opt))
-    print(res)
-    return res
+
+    if not res:
+        return []
+
+    # print(res[0])
+
+    xmin,xmax,ymin,ymax = 0,0,0,0
+    size = 0
+    # 选择一个最大的区域
+    for x1, y1, x2, y2, conf, cls in res[0]:
+        if abs(x2-x1) * abs(y2-y1) > size:
+            xmin, ymin, xmax, ymax = x1, y1, x2, y2
+            size = abs(x2-x1) * abs(y2-y1)
+
+    return [xmin, ymin, xmax, ymax]
 
 
-def main_process(img, model, filename, param):
+def main_process(img, model, filename, param, pet_box):
     # 将原图分为指定的子块;
     sub_block_num = param[P.IMG_SUBBLOCK_NUM]
     # N * N个blocks，每个blocks存储了该区域的子图像
@@ -305,7 +405,19 @@ def main_process(img, model, filename, param):
     diff = diff_clr
     if param[P.FEA_MODEL] == 'cnn':
         diff = diff_cnn
-    groups = get_connected_blocks(diff, blocks, param)
+    # 首先标记pet区域
+    if pet_box:
+        pet_groups = get_pet_blocks(img, pet_box, param, diff)
+    else:
+        pet_groups = []
+    # 再找其它区域
+    groups = get_connected_blocks(diff, blocks, param, pet_groups)
 
+    # pet的区域
+    if pet_box:
+        cv2.rectangle(img, (pet_box[0], pet_box[1]),
+                           (pet_box[2], pet_box[3]), (255, 0, 0), 3)
     # 输出groups
     show_groups(img, groups, param, filename)
+
+
