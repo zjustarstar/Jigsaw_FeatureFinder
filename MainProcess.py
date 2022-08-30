@@ -207,8 +207,8 @@ def get_pet_blocks(img, pet_box, param, diffs):
     y_end = int(ymax / int(img.shape[1] / BLOCKS_NUM))
 
     #全图最外面那圈不要
-    x_start, y_start = max(1, x_start), max(1, y_start)
-    x_end, y_end = min(BLOCKS_NUM-2, x_end), min(BLOCKS_NUM-2, y_end)
+    # x_start, y_start = max(1, x_start), max(1, y_start)
+    # x_end, y_end = min(BLOCKS_NUM-2, x_end), min(BLOCKS_NUM-2, y_end)
 
     groups = []
     group = []  # 单独的一组block
@@ -222,22 +222,38 @@ def get_pet_blocks(img, pet_box, param, diffs):
             for x in range(x_start, x_end+1):
                 group.append(x + y * BLOCKS_NUM)
                 used_blocks.append(x + y * BLOCKS_NUM)
-    # 如果不考虑最外圈,pet中心区域刚好等于特征组个数, 也可以全部区域加入;
-    elif (x_end - x_start - 1) * (y_end - y_start - 1) == BLOCKS_PER_FEATURE:
+    # 如果不考虑最外圈,pet中心区域还比特征组个数多, 则选用中心区域
+    elif (x_end - x_start-1) * (y_end - y_start-1) > BLOCKS_PER_FEATURE:
+        # 将中心区域作为pet区域
+        for y in range(y_start+1, y_end):
+            for x in range(x_start+1, x_end):
+                pet_blocks.append(x + y * BLOCKS_NUM)
+    # 如果不考虑最外圈,pet中心区域刚好小于等于特征组个数, 也可以全部区域加入;
+    elif (x_end - x_start - 1) * (y_end - y_start - 1) <= BLOCKS_PER_FEATURE:
+        # 中间区域全部加入
         for y in range(y_start+1, y_end):
             for x in range(x_start+1, x_end):
                 group.append(x + y * BLOCKS_NUM)
                 used_blocks.append(x + y * BLOCKS_NUM)
-    else:
-        # 在pet区域内查找特征组
+        # 算上最外圈的，作为pet区域
         for y in range(y_start, y_end+1):
             for x in range(x_start, x_end+1):
                 pet_blocks.append(x + y * BLOCKS_NUM)
 
+    block_map, border_block_index = get_block_info(param)
+
+    # 去除可能的边界block
+    temp_pet = pet_blocks.copy()
+    temp_group = group.copy()
+    for i in range(len(temp_pet)):
+        if temp_pet[i] in border_block_index:
+            pet_blocks.remove(temp_pet[i])
+    for i in range(len(temp_group)):
+        if temp_group[i] in border_block_index:
+            group.remove(temp_group[i])
+
     # 如果特征组数量还不足
     if len(group) < BLOCKS_PER_FEATURE:
-        block_map, border_block_index = get_block_info(param)
-
         # 第一个block选择最中间的
         cx = int((xmin + xmax) / 2 / int(img.shape[0] / BLOCKS_NUM))
         cy = int((ymin + ymax) / 2 / int(img.shape[0] / BLOCKS_NUM))

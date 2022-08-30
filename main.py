@@ -20,9 +20,9 @@ def main():
     # 每行每列分为多少个子块
     param[P.IMG_SUBBLOCK_NUM] = 8
     # 生成多少组特征
-    param[P.IMG_FEATURES_NUM] = 3
+    param[P.IMG_FEATURES_NUM] = 2
     # 每一组多少个子块，默认每4个组成一个feature
-    param[P.FEA_BLOCKS_NUM] = 4
+    param[P.FEA_BLOCKS_NUM] = 6
     # 每两个特征之间的距离
     param[P.FEA_BLOCKS_DIST] = 0
 
@@ -48,11 +48,11 @@ def main():
 
             pathname = os.path.join(os.path.join(ROOT, dir_name), filename)
             opt.source = pathname
-            mp.find_pet_face(pet_face_model, opt)
+            pet_box = mp.find_pet_face(pet_face_model, opt, img, param)
 
             # 去掉末尾的.jpg
             filename = filename[:-4]
-            #mp.main_process(img, model_feature, filename, param)
+            mp.main_process(img, model_feature, filename, param, pet_box)
 
 
 if __name__ == '__main__':
